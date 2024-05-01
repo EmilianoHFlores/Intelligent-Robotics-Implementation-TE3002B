@@ -56,10 +56,6 @@ def gaussianBlur(image, kernelSize=5, sigma=1):
     # Normalize the kernel
     kernel /= kernelSum
     
-    print (kernel)
-    
-    print("applying kernels")
-    
     # Apply the kernel to the image with convolution, using the cv2.filter2D function
     # convolution can be applied manually like:
     # for i in range(0, image.shape[0] - kernelSize):
