@@ -6,6 +6,7 @@ cv2.namedWindow('matches', 0)
 import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
+from collections import deque
 cv2.namedWindow('matches', cv2.WINDOW_NORMAL)
 cv2.namedWindow('motion', cv2.WINDOW_NORMAL)
 
@@ -29,6 +30,22 @@ class OrbPoints:
         except:
             matches = []
         return matches
+    
+    def filter_matches(self, kp1, kp2, matches):
+        # filter matches that are far from each other, since this is a video, they should be close
+        matched_points_1_raw = np.array([kp1[match.queryIdx].pt for match in matches])
+        matched_points_2_raw = np.array([kp2[match.trainIdx].pt for match in matches])
+        filtered_matches = []
+        for i, (matched_point_1, matched_point_2) in enumerate(zip(matched_points_1_raw, matched_points_2_raw)):
+            distance_between_points = np.linalg.norm(matched_point_1 - matched_point_2)
+            # further filter, if it is around the edges, it is likely noise
+            if matched_point_1[0] < 50 or matched_point_1[0] > 600 or matched_point_1[1] < 50 or matched_point_1[1] > 350:
+                continue
+            if distance_between_points > 10:
+                continue
+            filtered_matches.append(matches[i])
+                
+        return filtered_matches
 
     def draw_matches(self, img1, kp1, img2, kp2, matches):
         try:
@@ -45,6 +62,7 @@ class OrbPoints:
         print("--------------------")   
         matched_points_1 = np.array([kp1[match.queryIdx].pt for match in matches])
         matched_points_2 = np.array([kp2[match.trainIdx].pt for match in matches])
+                
         # print(f"matched_points_1: {matched_points_1}")
         # print(f"matched_points_2: {matched_points_2}")
         # draw each in a different plot, match the points with the same index with color
@@ -121,14 +139,15 @@ class OrbPoints:
 def get_lines(frame):
     # filter to detect lines
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    edges = cv2.Canny(gray, 20, 150, apertureSize=3)
     # slight erode
     kernel = np.ones((1, 1), np.uint8)
     edges = cv2.erode(edges, kernel, iterations=1)
     # slight dilate
     kernel = np.ones((1, 1), np.uint8)
     edges = cv2.dilate(edges, kernel, iterations=1)
-    lines = cv2.HoughLines(edges, 1, np.pi / 180, 200)
+    lines = cv2.HoughLines(edges, 1, np.pi / 180, 150)
     line_list = []
     if lines is not None:
         for rho, theta in lines[:, 0]:
@@ -179,7 +198,7 @@ def show_only_lines(frame, line_list):
         y1 = int(y0 + 1000 * (a))
         x2 = int(x0 - 1000 * (-b))
         y2 = int(y0 - 1000 * (a))
-        cv2.line(binary_image, (x1, y1), (x2, y2), 255, 2)
+        cv2.line(binary_image, (x1, y1), (x2, y2), 255, 4)
     # dilate binary
     # print(binary_image.shape)
     # kernel = np.ones((5, 5), np.uint8)
@@ -187,11 +206,40 @@ def show_only_lines(frame, line_list):
     # binary_image = np.reshape(binary_image, (binary_image.shape[0], binary_image.shape[1], 1))
     return frame & binary_image
 
+def apply_filter(frame, filter_frame, alpha):
+    return cv2.addWeighted(frame, alpha, filter_frame, 1 - alpha, 0)
+
+def apply_blurred_filter(frame, filter_frame, alpha):
+    blurred_filter = cv2.GaussianBlur(filter_frame, (21, 21), 0)
+    return cv2.addWeighted(frame, alpha, blurred_filter, 1 - alpha, 0)
         
 orb_points = OrbPoints()
 video = cv2.VideoCapture("ducks.mp4")
 
+# since the image is mostly gray, and the lines displayed are over a black backgrpound, we will apply a rainbow filter to the image, and the bakcground will also be rainbow
+# this will make the lines stand out more
+# to not follow a biased color shceme (such as a raibow from up to down), we will make a grid with random colors
+grid_divisions = 10
+
 ret, prev_frame = video.read()
+
+SKIP_SECONDS = 0
+
+video.set(cv2.CAP_PROP_POS_MSEC, SKIP_SECONDS * 1000)
+
+FRAME_HEIGHT = prev_frame.shape[0]
+FRAME_WIDTH = prev_frame.shape[1]
+
+grid = np.zeros((FRAME_HEIGHT, FRAME_WIDTH, 3), np.uint8)
+for i in range(grid_divisions):
+    for j in range(grid_divisions):
+        # generate according to rainbow spectrum
+        hue = int(255 * (i * grid_divisions + j) / (grid_divisions**2 - 1))
+        color = cv2.cvtColor(np.uint8([[[hue, 255, 255]]]), cv2.COLOR_HSV2BGR)
+        grid[i * (FRAME_HEIGHT // grid_divisions): (i + 1) * (FRAME_HEIGHT // grid_divisions), j * (FRAME_WIDTH // grid_divisions): (j + 1) * (FRAME_WIDTH // grid_divisions)] = color
+cv2.imshow("grid", grid)
+# apply filter to image, make as if the grid is superimposed transparently
+# prev_frame = apply_filter(prev_frame, grid, 0.5)
 sample_frame = imutils.resize(prev_frame, height=FRAME_HEIGHT)
 cv2.resizeWindow('matches', sample_frame.shape[1], sample_frame.shape[0])
 # cv2.resizeWindow('motion', sample_frame.shape[1], sample_frame.shape[0])
@@ -199,41 +247,60 @@ cv2.resizeWindow('matches', sample_frame.shape[1], sample_frame.shape[0])
 black_frame = np.zeros((prev_frame.shape[0], prev_frame.shape[1], 3), np.uint8)
 
 angle_accum = 0
+angle_queue = deque()
+queue_size = 10 # 1/3 second
 
 while ret:
     ret, frame = video.read()
+    # frame = apply_filter(frame, grid, 0.5)
     if not ret:
         break
 
     prev_frame_analysis = prev_frame.copy()
     line_list = get_lines(prev_frame_analysis)
-    # prev_frame_analysis = draw_lines(black_frame, line_list)
+    # prev_frame_analysis = draw_lines(prev_frame_analysis, line_list)
     prev_frame_analysis = show_only_lines(prev_frame_analysis, line_list)
     
     
     frame_analysis = frame.copy()
     line_list = get_lines(frame_analysis)
-    #frame_analysis = draw_lines(black_frame, line_list)
+    # frame_analysis = draw_lines(frame_analysis, line_list)
     frame_analysis = show_only_lines(frame_analysis, line_list)
+    
+    ALPHA = 0.7
+    prev_frame_analysis = apply_blurred_filter(prev_frame_analysis, grid, ALPHA)
+    frame_analysis = apply_blurred_filter(frame_analysis, grid, ALPHA)
+    
     kp1, des1 = orb_points.detect_and_compute(prev_frame_analysis)
     kp2, des2 = orb_points.detect_and_compute(frame_analysis)
 
     matches = orb_points.match_descriptors(des1, des2)
-    
-    fig, angle, translation = orb_points.calculate_motion(kp1, kp2, matches)
+    filtered_matches = orb_points.filter_matches(kp1, kp2, matches)
+    fig, angle, translation = orb_points.calculate_motion(kp1, kp2, filtered_matches)
     
     # stabilzie angle
-    angle_accum += angle
+    # filter angle to prevent sudden changes
+    # filter angle to prevent sudden changes
+    ANGLE_LIMIT = 0.05
+    if abs(angle) > ANGLE_LIMIT:
+        angle = np.sign(angle) * ANGLE_LIMIT
+    angle_queue.append(angle)
+    if len(angle_queue) >= queue_size:
+        angle_queue.popleft()
+    filtered_angle = sum(angle_queue) / len(angle_queue)
+    
+    angle_accum += filtered_angle
+    
     print("angle_accum", angle_accum)
     
-    rotated_frame = imutils.rotate(frame, angle_accum)  
+    rotated_frame = imutils.rotate(frame, np.degrees(angle_accum))  
     # fig.canvas.draw()
     # print("transformnig to array")
     # img_plot = np.array(fig.canvas.renderer.buffer_rgba())
     # img_plot = cv2.cvtColor(img_plot, cv2.COLOR_BGRA2RGB)
     # print(img_plot.shape)
 
-    img3 = orb_points.draw_matches(prev_frame, kp1, frame, kp2, matches)
+    img3 = orb_points.draw_matches(prev_frame_analysis, kp1, frame_analysis, kp2, filtered_matches)
     print("drawn matches")
     
     #cv2.imshow("motion", img_plot)
