@@ -7,6 +7,13 @@ import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 from collections import deque
+import argparse
+
+# arg to save video
+ap = argparse.ArgumentParser()
+ap.add_argument("-s", "--save", type=str, default="output.avi", help="path to save the video")
+args = vars(ap.parse_args())
+
 cv2.namedWindow('matches', cv2.WINDOW_NORMAL)
 cv2.namedWindow('motion', cv2.WINDOW_NORMAL)
 
@@ -54,7 +61,20 @@ class OrbPoints:
             img3 = img1
         return img3
     
-    def calculate_motion(self, kp1, kp2, matches):
+    def filter_border_points(self, matched_points_1, matched_points_2, tolerance_x, tolerance_y, width, height):
+        # if matched_points_1 or matched_points_2 are not withing a rectangle with x corners on 0+tolerance_x, width-tolerance_x, y corners on 0+tolerance_y, height-tolerance_y, remove them
+        filtered_points_1 = []
+        filtered_points_2 = []
+        for i, (point_1, point_2) in enumerate(zip(matched_points_1, matched_points_2)):
+            if point_1[0] < tolerance_x or point_1[0] > 640 - tolerance_x or point_1[1] < tolerance_y or point_1[1] > 360 - tolerance_y:
+                continue
+            if point_2[0] < tolerance_x or point_2[0] > 640 - tolerance_x or point_2[1] < tolerance_y or point_2[1] > 360 - tolerance_y:
+                continue
+            filtered_points_1.append(point_1)
+            filtered_points_2.append(point_2)
+        return np.array(filtered_points_1), np.array(filtered_points_2)
+    
+    def calculate_motion(self, kp1, kp2, matches, width, height):
         if len(matches) <= 0:
             return np.zeros((100, 100, 3)), 0, np.zeros(2)
 
@@ -62,7 +82,12 @@ class OrbPoints:
         print("--------------------")   
         matched_points_1 = np.array([kp1[match.queryIdx].pt for match in matches])
         matched_points_2 = np.array([kp2[match.trainIdx].pt for match in matches])
-                
+        
+        # filter points that are too close to the border
+        matched_points_1, matched_points_2 = self.filter_border_points(matched_points_1, matched_points_2, 100, 100, width, height)        
+        
+        if len(matched_points_1) <= 0:
+            return np.zeros((100, 100, 3)), 0, np.zeros(2)
         # print(f"matched_points_1: {matched_points_1}")
         # print(f"matched_points_2: {matched_points_2}")
         # draw each in a different plot, match the points with the same index with color
@@ -128,9 +153,9 @@ class OrbPoints:
         # y translation
         t[1]
         
-        print(f"angle: {angle}")
-        print(f"t: {t}")
-        print("--------------------")
+        # print(f"angle: {angle}")
+        # print(f"t: {t}")
+        # print("--------------------")
         
         fig = np.zeros((100, 100, 3))
         return fig, angle, t
@@ -140,14 +165,14 @@ def get_lines(frame):
     # filter to detect lines
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (3, 3), 0)
-    edges = cv2.Canny(gray, 20, 150, apertureSize=3)
+    edges = cv2.Canny(gray, 100, 130, apertureSize=3)
     # slight erode
     kernel = np.ones((1, 1), np.uint8)
     edges = cv2.erode(edges, kernel, iterations=1)
     # slight dilate
     kernel = np.ones((1, 1), np.uint8)
     edges = cv2.dilate(edges, kernel, iterations=1)
-    lines = cv2.HoughLines(edges, 1, np.pi / 180, 150)
+    lines = cv2.HoughLines(edges, 1, np.pi / 180, 100)
     line_list = []
     if lines is not None:
         for rho, theta in lines[:, 0]:
@@ -205,6 +230,7 @@ def show_only_lines(frame, line_list):
     # binary_image = cv2.dilate(binary_image, kernel, iterations=1)
     # binary_image = np.reshape(binary_image, (binary_image.shape[0], binary_image.shape[1], 1))
     return frame & binary_image
+    
 
 def apply_filter(frame, filter_frame, alpha):
     return cv2.addWeighted(frame, alpha, filter_frame, 1 - alpha, 0)
@@ -215,6 +241,14 @@ def apply_blurred_filter(frame, filter_frame, alpha):
         
 orb_points = OrbPoints()
 video = cv2.VideoCapture("ducks.mp4")
+width, height = video.get(cv2.CAP_PROP_FRAME_WIDTH), video.get(cv2.CAP_PROP_FRAME_HEIGHT)
+fps = video.get(cv2.CAP_PROP_FPS)
+
+
+# output video
+if args["save"] is not None:
+    fourcc = cv2.VideoWriter_fourcc(*'XVID')
+    video_out = cv2.VideoWriter(args["save"], fourcc, fps, (int(width), int(height)))
 
 # since the image is mostly gray, and the lines displayed are over a black backgrpound, we will apply a rainbow filter to the image, and the bakcground will also be rainbow
 # this will make the lines stand out more
@@ -244,6 +278,7 @@ sample_frame = imutils.resize(prev_frame, height=FRAME_HEIGHT)
 cv2.resizeWindow('matches', sample_frame.shape[1], sample_frame.shape[0])
 # cv2.resizeWindow('motion', sample_frame.shape[1], sample_frame.shape[0])
 
+width, height = sample_frame.shape[1], sample_frame.shape[0]
 black_frame = np.zeros((prev_frame.shape[0], prev_frame.shape[1], 3), np.uint8)
 
 angle_accum = 0
@@ -276,19 +311,23 @@ while ret:
 
     matches = orb_points.match_descriptors(des1, des2)
     filtered_matches = orb_points.filter_matches(kp1, kp2, matches)
-    fig, angle, translation = orb_points.calculate_motion(kp1, kp2, filtered_matches)
+    fig, angle, translation = orb_points.calculate_motion(kp1, kp2, filtered_matches, width, height)
     
     # stabilzie angle
     # filter angle to prevent sudden changes
     # filter angle to prevent sudden changes
-    ANGLE_LIMIT = 0.05
-    if abs(angle) > ANGLE_LIMIT:
+    ANGLE_LIMIT = 0.08
+    ANGLE_LOWER_LIMIT = 0.01
+    if abs(angle) > ANGLE_LIMIT :
         angle = np.sign(angle) * ANGLE_LIMIT
+    if abs(angle) <  ANGLE_LOWER_LIMIT:
+        angle = 0
     angle_queue.append(angle)
     if len(angle_queue) >= queue_size:
         angle_queue.popleft()
     filtered_angle = sum(angle_queue) / len(angle_queue)
     
+    print("filtered angle: ", filtered_angle)
     angle_accum += filtered_angle
     
     print("angle_accum", angle_accum)
@@ -301,13 +340,17 @@ while ret:
     # print(img_plot.shape)
 
     img3 = orb_points.draw_matches(prev_frame_analysis, kp1, frame_analysis, kp2, filtered_matches)
-    print("drawn matches")
+    #print("drawn matches")
     
     #cv2.imshow("motion", img_plot)
     cv2.imshow("matches", img3)
     # cv2.imshow("motion", img_plot)
     cv2.imshow("rotated", rotated_frame)
     cv2.imshow("lines", prev_frame_analysis)
+    
+    if args["save"] is not None:
+        save_frame = imutils.resize(rotated_frame, height=height, width=width)
+        video_out.write(save_frame)
     
     # wait until a key is pressed to continue
     if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -317,3 +360,6 @@ while ret:
 
 cv2.destroyAllWindows()
 video.release()
+if args["save"] is not None:
+    video_out.release()
+    
