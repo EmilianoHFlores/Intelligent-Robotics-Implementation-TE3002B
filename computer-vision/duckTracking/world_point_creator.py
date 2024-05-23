@@ -20,9 +20,11 @@ image_y = -1
 def mouse_callback(event, x, y, flags, param):
     global image_x, image_y, stop
     if event == cv2.EVENT_LBUTTONDOWN:
-        image_x = x
-        image_y = y
+        image_x = np.int32(x)
+        image_y = np.int32(y)
     elif event == cv2.EVENT_RBUTTONDOWN:
+        image_x = -1
+        image_y = -1
         stop = True
 
 # Create a window
@@ -39,11 +41,11 @@ while stop == False:
         frame = cv2.putText(frame, f"{image_3d_point[0]}, {image_3d_point[1]}", (image_2d_point[0], image_2d_point[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
     if image_x != -1 and image_y != -1:
         print(f"Image x: {image_x}, Image y: {image_y}")
-        image_2d_points.append([image_x, image_y])
         input_x = input("Enter the x coordinate of the point in the world: ")
         input_y = input("Enter the y coordinate of the point in the world: ")
         print(f"World x: {input_x}, World y: {input_y}")
-        image_3d_points.append([input_x, input_y])
+        image_2d_points.append([image_x, image_y])
+        image_3d_points.append([np.float32(input_x), np.float32(input_y), np.float32(0)])
         image_x = -1
         image_y = -1
         frame = cv2.circle(frame, (image_x, image_y), 5, (0, 0, 255), -1)
@@ -51,6 +53,12 @@ while stop == False:
     
     cv2.imshow("image", frame)
     cv2.waitKey(1)
+
+image_2d_points = np.array(image_2d_points, dtype=np.int32)
+image_3d_points = np.array(image_3d_points, dtype=np.float32)
+
+print(f"{len(image_2d_points)} points were selected: {image_2d_points}")
+print(f"{len(image_3d_points)} points were selected: {image_3d_points}")
 
 # Save the points
 print("image file: ", image_file)
