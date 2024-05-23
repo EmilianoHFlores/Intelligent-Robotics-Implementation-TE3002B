@@ -5,6 +5,12 @@ import numpy as np
 import os
 import math
 import argparse
+import imutils
+# arg to save video
+ap = argparse.ArgumentParser()
+ap.add_argument("-s", "--save", type=str, default="output.avi", help="path to save the video")
+args = vars(ap.parse_args())
+
 
 
 # Create a VideoCapture objec
@@ -63,6 +69,12 @@ mtx, dist, rvecs, tvecs = generate_camera_calibration(points_2d, points_3d)
 # birds-eye homography
 # get width, height from video
 width, height = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+fps = cap.get(cv2.CAP_PROP_FPS)
+
+if args["save"]:
+    fourcc = cv2.VideoWriter_fourcc(*"XVID")
+    out = cv2.VideoWriter(args["save"], fourcc, fps, (width, height))
+
 h = generate_birds_eye_homography(points_2d, points_3d, width, height)
 
 while True:
@@ -73,6 +85,9 @@ while True:
     if not ret:
         break
     cv2.imshow("Frame", frame)
+    if args["save"]:
+        save_frame = imutils.resize(birds_eye_frame, width=width, height=height)
+        out.write(save_frame)
     key = cv2.waitKey(1)
     if key == ord("s"):
         break
