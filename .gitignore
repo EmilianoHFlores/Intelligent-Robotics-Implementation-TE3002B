@@ -4,5 +4,9 @@
 !/computer-vision/duckTracking/calibration/calibration_2/img0.png
 *.jpeg
 *.autosave
+*.pyc
+
+computer-vision/xarm-challenges-ws/build/*
+computer-vision/xarm-challenges-ws/devel/*
 
 # image.png is allowed to upload
