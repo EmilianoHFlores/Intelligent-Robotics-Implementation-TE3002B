@@ -1,0 +1,44 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro" name="xarm_camera">
+
+  <!-- base link -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="0.3 0.3 0.001" />
+      </geometry>
+      <material name="blue" />
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="0.3 0.3 0.3" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="1.0" />
+      <inertia ixx="0.001" ixy="0.0" ixz="0.0" iyy="0.001" iyz="0.0" izz="0.001" />
+    </inertial>
+    </link>
+
+    
+
+  <xacro:arg name="prefix" default="" />
+  <xacro:arg name="add_gripper" default="false" />
+  <xacro:arg name="add_vacuum_gripper" default="false" />
+  <xacro:arg name="robot_type" default="xarm" />
+  <xacro:arg name="model1300" default="false" />
+  <xacro:arg name="add_realsense_d435i" default="false" />
+  <xacro:arg name="add_d435i_links" default="false" />
+  <xacro:arg name="robot_sn" default="" />
+
+  <xacro:arg name="dof" default="6" />
+  
+  <xacro:include filename="$(find xarm_description)/urdf/xarm_device_macro.xacro" />
+  <xacro:xarm_device prefix="$(arg prefix)" dof="$(arg dof)" attach_to="base_link" model1300="$(arg model1300)" add_gripper="$(arg add_gripper)" add_vacuum_gripper="$(arg add_vacuum_gripper)" add_realsense_d435i="$(arg add_realsense_d435i)" add_d435i_links="$(arg add_d435i_links)" robot_sn="$(arg robot_sn)" />
+
+  <xacro:include filename="$(find camera_xarm_setup)/urdf/camera.urdf.xacro" />
+  <xacro:load_camera name="Cam1" attach_to="base_link" x="0.4" y="0.4" z="0.0" r_p="0.0" r_r="0.0" r_y="0.0" />
+</robot>
