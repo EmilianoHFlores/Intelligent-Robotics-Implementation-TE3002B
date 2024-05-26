@@ -2,6 +2,7 @@ import numpy as np
 import time
 import cv2
 import math
+import pickle
 import imutils
 cv2.namedWindow('Analysis', 0)
 import matplotlib
@@ -12,6 +13,7 @@ cv2.namedWindow('Analysis', cv2.WINDOW_NORMAL)
 import argparse 
 
 SOURCE = "stabilized_video_ducks.avi"
+TRACKS_SOURCE = "frame_tracks.pkl"
 CALIBRATION_2D_POINTS_FILE = "calibration/calibration_2/img0_2d_points.npy"
 CALIBRATION_3D_POINTS_FILE = "calibration/calibration_2/img0_3d_points.npy"
 
@@ -19,6 +21,22 @@ class CameramanPositionTracker:
     def __init__(self, source, calibration_2d_points_file, calibration_3d_points_file, save_video=''):
         self.source = source
         self.cap = cv2.VideoCapture(source)
+        
+        self.frame_tracks = pickle.load(open(TRACKS_SOURCE, "rb"))
+        
+        # self.frame_tracks[0] is a dict that ties id with the bounding boxes
+        self.track_num = len(self.frame_tracks[0])
+        print("Number of tracks: ", self.track_num)
+        
+        self.ducks_positions = {duck_id : [] for duck_id in self.frame_tracks[0].keys()}
+        self.ducks_current_x = {duck_id : 0 for duck_id in self.frame_tracks[0].keys()}
+        self.ducks_current_y = {duck_id : 0 for duck_id in self.frame_tracks[0].keys()}
+        # create a color for each track
+        self.colors = np.random.randint(0, 255, (self.track_num, 3))
+        # assign to each id
+        self.track_colors = {}
+        for i, track_id in enumerate(self.frame_tracks[0].keys()):
+            self.track_colors[track_id] = self.colors[i]
         
         self.FIG_SIZE_X = 30
         self.FIG_SIZE_Y = 25
@@ -87,6 +105,9 @@ class CameramanPositionTracker:
         self.orb_show = self.axs[3].imshow(np.zeros((self.height, self.width, 3)))
         # cameraman position will be a line plot where the cameraman new positions will be added
         self.cameraman_position_plot = self.axs[4].plot([], [])[0]
+        # The ducks position will be a plot with several lines, one for each duck
+        # allows for several series
+        self.ducks_positions_plot = self.axs[5]
         
         # use blit
         self.axs_background = [self.fig.canvas.copy_from_bbox(ax.bbox) for ax in self.axs]
@@ -336,15 +357,104 @@ class CameramanPositionTracker:
         self.cameraman_position_plot.set_xdata([pos[0] for pos in self.cameraman_positions])    
         self.cameraman_position_plot.set_ydata([pos[1] for pos in self.cameraman_positions])
     
+    def get_duck_bboxes(self, frame_count):
+        duck_bboxes = {}
+        for i, frame_track_id in enumerate(self.frame_tracks[frame_count]):
+            frame_track = self.frame_tracks[frame_count][frame_track_id]
+            if len(frame_track) > 0:
+                duck_bboxes[frame_track_id] = frame_track
+        return duck_bboxes
+    
+    def get_duck_centroids(self, frame_count):
+        duck_centroids = {}
+        for i, frame_track_id in enumerate(self.frame_tracks[frame_count]):
+            frame_track = self.frame_tracks[frame_count][frame_track_id]
+            if len(frame_track) > 0:
+                width = frame_track[2] - frame_track[0]
+                height = frame_track[3] - frame_track[1]
+                x = frame_track[0] + width // 2
+                y = frame_track[1] + height // 2
+                duck_centroids[frame_track_id] = (x, y)
+        return duck_centroids
+    
+    def draw_duck_bboxes(self, frame, duck_bboxes):
+        
+        for duck_bbox_id in duck_bboxes:
+            x1, y1, x2, y2 = duck_bboxes[duck_bbox_id]
+            cv2.rectangle(frame, (x1, y1), (x2, y2), self.track_colors[duck_bbox_id].tolist(), 2)
+        return frame
+            
+    def draw_duck_centroids(self, frame, duck_centroids):
+        for duck_centroid_id in duck_centroids:
+            x, y = duck_centroids[duck_centroid_id]
+            cv2.circle(frame, (x, y), 5, self.track_colors[duck_centroid_id].tolist(), -1)
+        return frame
+            
+    def warp_duck_bboxes(self, h, duck_bboxes, duck_centroids):
+        warped_duck_bboxes = {}
+        warped_duck_centroids = {}
+        for duck_bbox_id in duck_bboxes:
+            x1, y1, x2, y2 = duck_bboxes[duck_bbox_id]
+            x, y = duck_centroids[duck_bbox_id]
+            # warp the bounding box
+            points = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float32)
+            warped_points = cv2.perspectiveTransform(points.reshape(-1, 1, 2), h)
+            warped_points = warped_points.reshape(-1, 2)
+            x1, y1 = warped_points[0]
+            x2, y2 = warped_points[2]
+            
+            x1, y1 = int(x1), int(y1)
+            x2, y2 = int(x2), int(y2)
+            
+            # warp centroid to homography
+            print("Centroid x, y: ", x, y)
+            centroid = np.array([[x, y]], dtype=np.float32)
+            warped_centroid = cv2.perspectiveTransform(centroid.reshape(-1, 1, 2), h)
+            warped_centroid = warped_centroid.reshape(-1, 2)
+            x, y = warped_centroid[0]
+            x, y = int(x), int(y)
+            print("Warped centroid x, y: ", x, y)
+            
+            warped_duck_bboxes[duck_bbox_id] = (x1, y1, x2, y2)
+            warped_duck_centroids[duck_bbox_id] = (x, y)
+        return warped_duck_bboxes, warped_duck_centroids
+        
+    def calculate_ducks_motion(self, prev_warped_centroids, warped_centroids):
+        # generate a dictionaries with 0 for every duck_id
+        ducks_x_motion = {duck_id : 0 for duck_id in self.ducks_positions}
+        ducks_y_motion = {duck_id : 0 for duck_id in self.ducks_positions}
+        print("Prev warped centroids: ", prev_warped_centroids)
+        print("Warped centroids: ", warped_centroids)
+        for duck_id in ducks_x_motion:
+            try:
+                x, y = prev_warped_centroids[duck_id]
+                x_new, y_new = warped_centroids[duck_id]
+                x_motion = x_new - x
+                y_motion = y_new - y
+                print("Motion for duck: ", duck_id, x_motion, y_motion)
+                ducks_x_motion[duck_id] = x_motion
+                ducks_y_motion[duck_id] = y_motion
+            except:
+                print("Motion for duck (untracked): ", duck_id, 0, 0)
+                ducks_x_motion[duck_id] = 0
+                ducks_y_motion[duck_id] = 0
+        return ducks_x_motion, ducks_y_motion
+            
     def analyze_video(self):
         
         # plt.show(block=False)   
-        ret, prev_frame = self.cap.read()   
+        frame_count = 0
+        ret, prev_frame = self.cap.read()
+        prev_duck_bboxes = self.get_duck_bboxes(frame_count)
+        prev_duck_centroids = self.get_duck_centroids(frame_count)
+        prev_warped_bboxes, prev_warped_centroids = self.warp_duck_bboxes(self.homography, prev_duck_bboxes, prev_duck_centroids)
         prev_birds_eye_view = cv2.warpPerspective(prev_frame, self.homography, (self.FRAME_WIDTH, self.FRAME_HEIGHT))
         prev_useful_area = self.get_useful_area(prev_birds_eye_view)
         prev_line_list = self.detect_lines(prev_birds_eye_view)
         prev_line_image = self.show_only_lines(prev_birds_eye_view, prev_line_list)
         prev_line_image = self.apply_blurred_filter(prev_line_image, self.grid_filter, self.filter_alpha)
+        
+        frame_count+=1
         
         while True:
             
@@ -353,6 +463,12 @@ class CameramanPositionTracker:
             
             if not ret:
                 break
+            
+            duck_bboxes = self.get_duck_bboxes(frame_count)
+            duck_centroids = self.get_duck_centroids(frame_count)
+            
+            warped_bboxes, warped_centroids = self.warp_duck_bboxes(self.homography, duck_bboxes, duck_centroids)
+            
             birds_eye_view = cv2.warpPerspective(frame, self.homography, (self.FRAME_WIDTH, self.FRAME_HEIGHT))
             useful_area = self.get_useful_area(birds_eye_view)
             
@@ -396,8 +512,34 @@ class CameramanPositionTracker:
             self.cameraman_current_position = [self.cameraman_current_x, self.cameraman_current_y]
             self.cameraman_positions.append(self.cameraman_current_position)
             
+            ducks_x_motion, ducks_y_motion = self.calculate_ducks_motion(prev_warped_centroids, warped_centroids)
+            
+            for duck_id in ducks_x_motion:
+                if ducks_x_motion[duck_id] == 0 and ducks_y_motion[duck_id] == 0:
+                    continue
+                ducks_x_motion[duck_id] = ducks_x_motion[duck_id] / self.homography_visualization_multiplier - x_motion
+                ducks_y_motion[duck_id] = ducks_y_motion[duck_id] / self.homography_visualization_multiplier - y_motion
+            
+            # ducks_x_motion = {duck_id : (-ducks_x_motion[duck_id] / self.homography_visualization_multiplier - x_motion) for duck_id in ducks_x_motion}
+            # ducks_y_motion = {duck_id : (-ducks_y_motion[duck_id] / self.homography_visualization_multiplier - y_motion) for duck_id in ducks_y_motion}
+            
+            print(ducks_x_motion)
+            
+            # update ducks positions
+            for duck_id in self.ducks_positions:
+                self.ducks_current_x[duck_id] = self.ducks_current_x[duck_id] + ducks_x_motion[duck_id]
+                self.ducks_current_y[duck_id] = self.ducks_current_y[duck_id] + ducks_y_motion[duck_id]
+                duck_current_position = [self.ducks_current_x[duck_id], self.ducks_current_y[duck_id]]
+                self.ducks_positions[duck_id].append(duck_current_position)
+            
             for ax, axbackground in zip(self.axs, self.axs_background):
                 self.fig.canvas.restore_region(axbackground)
+                
+            frame = self.draw_duck_bboxes(frame, duck_bboxes)
+            frame = self.draw_duck_centroids(frame, duck_centroids)
+            
+            birds_eye_view = self.draw_duck_bboxes(birds_eye_view, warped_bboxes)
+            birds_eye_view = self.draw_duck_centroids(birds_eye_view, warped_centroids)
             
             self.orig_img_show.set_data(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             self.birds_eye_show.set_data(cv2.cvtColor(birds_eye_view, cv2.COLOR_BGR2RGB))
@@ -410,12 +552,20 @@ class CameramanPositionTracker:
             self.axs[4].set_xlim(min([pos[0] for pos in self.cameraman_positions]) -0.2, max([pos[0] for pos in self.cameraman_positions]) + 0.2)
             self.axs[4].set_ylim(min([pos[1] for pos in self.cameraman_positions]) - 0.2, max([pos[1] for pos in self.cameraman_positions]) + 0.2)
             
+            # for every duck id, add a different plot line
+            for duck_id in self.ducks_positions:
+                # 0-255 to 0-1
+                plt_color = self.track_colors[duck_id] / 255
+                self.ducks_positions_plot.plot([pos[0] for pos in self.ducks_positions[duck_id]], [pos[1] for pos in self.ducks_positions[duck_id]], color=plt_color)
+                # plot duck current position
+                self.ducks_positions_plot.plot(self.ducks_current_x[duck_id], self.ducks_current_y[duck_id], 'o', color=plt_color)
             
             self.axs[0].draw_artist(self.orig_img_show)
             self.axs[1].draw_artist(self.birds_eye_show)
             self.axs[2].draw_artist(self.line_detection_show)
             self.axs[3].draw_artist(self.orb_show)
             self.axs[4].draw_artist(self.cameraman_position_plot)
+            self.axs[5].draw_artist(self.ducks_positions_plot)  
                 
             start_time = time.time()
             show_img = self.plt_to_cv2(self.fig)
@@ -424,7 +574,7 @@ class CameramanPositionTracker:
             for ax in self.axs:
                 self.fig.canvas.blit(ax.bbox)
                 
-            # self.fig.canvas.flush_events()
+            self.fig.canvas.flush_events()
 
             cv2.imshow("Analysis", show_img)
             
@@ -434,6 +584,10 @@ class CameramanPositionTracker:
             prev_frame = frame
             prev_line_list = line_list
             prev_line_image = line_image
+            prev_duck_bboxes = duck_bboxes
+            prev_duck_centroids = duck_centroids
+            prev_warped_bboxes = warped_bboxes
+            prev_warped_centroids = warped_centroids
             
             if self.save_video != '':
                 print(f"Show img shape: {show_img.shape}")
@@ -441,7 +595,7 @@ class CameramanPositionTracker:
                 show_img = cv2.resize(show_img, (self.FIG_SIZE_X*100, self.FIG_SIZE_Y*100))
                 self.out.write(show_img)
 
-            
+            frame_count += 1
 
             
         self.cap.release()
