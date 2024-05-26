@@ -105,5 +105,3 @@ ax2.set_title('3D Depth Image')
 ax2.scatter(x, y, z, c=colors, marker='o')
 plt.tight_layout()
 plt.show()
-# Compare this snippet from vision/Depth-Anything/run-video.py:
-
