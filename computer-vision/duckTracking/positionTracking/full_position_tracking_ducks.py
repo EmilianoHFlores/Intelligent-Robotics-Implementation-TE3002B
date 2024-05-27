@@ -517,13 +517,11 @@ class CameramanPositionTracker:
             for duck_id in ducks_x_motion:
                 if ducks_x_motion[duck_id] == 0 and ducks_y_motion[duck_id] == 0:
                     continue
-                ducks_x_motion[duck_id] = ducks_x_motion[duck_id] / self.homography_visualization_multiplier - x_motion
+                ducks_x_motion[duck_id] = -(ducks_x_motion[duck_id] / self.homography_visualization_multiplier - x_motion)
                 ducks_y_motion[duck_id] = ducks_y_motion[duck_id] / self.homography_visualization_multiplier - y_motion
             
             # ducks_x_motion = {duck_id : (-ducks_x_motion[duck_id] / self.homography_visualization_multiplier - x_motion) for duck_id in ducks_x_motion}
             # ducks_y_motion = {duck_id : (-ducks_y_motion[duck_id] / self.homography_visualization_multiplier - y_motion) for duck_id in ducks_y_motion}
-            
-            print(ducks_x_motion)
             
             # update ducks positions
             for duck_id in self.ducks_positions:
