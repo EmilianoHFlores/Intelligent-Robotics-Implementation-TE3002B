@@ -82,8 +82,9 @@ void draw() {
     print("\n");
     // message comes in format "x,y,angle"
     String[] parts = split(message, ",");
-    rectX = int(parts[0]);
-    rectY = int(parts[1]);
+    rectX = int(float(parts[0]) * imgWidth);
+    rectY = int(float(parts[1]) * imgHeight);
+    print("rectX: " + rectX + "RectY: " + rectY + "\n");
     rectAngle = float(parts[2]);
   }
   // draw collision points

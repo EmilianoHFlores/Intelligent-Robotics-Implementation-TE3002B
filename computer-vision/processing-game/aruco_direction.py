@@ -6,6 +6,7 @@ import cv2.aruco as aruco
 import threading
 import socket
 import time
+import imutils
 
 IP = "127.0.0.1"
 PORT = 5204
@@ -102,11 +103,14 @@ class arucoPublisher:
         
         while self.active:
             success, img = cap.read()
-            img, self.centroid, self.angle = detector.processImage(img)
+            img = imutils.resize(img, width=640)
+            img, centroid, self.angle = detector.processImage(img)
+            # normalize centroid
+            self.centroid = [centroid[0] / img.shape[1], centroid[1] / img.shape[0]]
             
             cv2.imshow('img', img)
             k = cv2.waitKey(30) & 0xff
-            if k == 27:
+            if k == 27 or k == ord('q'):
                 self.active = False
                 break
         
